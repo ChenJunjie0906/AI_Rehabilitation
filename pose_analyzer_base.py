@@ -56,6 +56,12 @@ class PoseAnalyzerBase:
 
     }
 
+    # 头/颈中线点：无论侧视图左近还是右近都应绘制
+    _CENTER_INDICES = {0, 7, 8}
+
+    # 判断关键点是否在画面内时的归一化容差
+    _FRAME_MARGIN = 0.01
+
     def __init__(self):
         self._lateral_calc_methods = {
             "shoulder_flexion":     self._calculate_shoulder_flexion,
@@ -138,37 +144,74 @@ class PoseAnalyzerBase:
     def _check_visibility(self, landmarks, indices, threshold=0.3):
         return all(getattr(landmarks[i], 'visibility', 1.0) >= threshold for i in indices)
 
-    def _check_foot_visibility(self, landmarks, side="left"):
+    def _is_in_frame(self, landmarks, indices, margin=None):
+        """
+        检查给定关键点是否全部位于画面之内（归一化坐标 0~1）。
+        只要任一点越出画面（或越出容差），即视为画面不全。
+        """
+        if margin is None:
+            margin = self._FRAME_MARGIN
+        lo, hi = -margin, 1.0 + margin
+        for i in indices:
+            lm = landmarks[i]
+            if not (lo <= lm.x <= hi) or not (lo <= lm.y <= hi):
+                return False
+        return True
+
+    def _check_foot_visibility(self, landmarks, side="left", vis_threshold=0.5):
+        """
+        足部可见性更严格的校验：
+          1) 脚跟与脚趾 visibility 必须达到阈值；
+          2) 脚跟与脚趾必须位于画面内；
+          3) 脚跟—脚趾水平间距必须足够大（否则是 MediaPipe
+             在足部被裁/被裤管遮挡时常见的"塌陷"误估，
+             会把足中点甩到踝关节正下方，造成 ankle 角度
+             从 90° 翻到 170°，误报跖屈/背屈）。
+        """
         h_idx, t_idx = (29, 31) if side == "left" else (30, 32)
-        return (landmarks[h_idx].visibility >= 0.3 and
-                landmarks[t_idx].visibility >= 0.3)
+        heel, toe = landmarks[h_idx], landmarks[t_idx]
+
+        if heel.visibility < vis_threshold or toe.visibility < vis_threshold:
+            return False
+        if not self._is_in_frame(landmarks, [h_idx, t_idx]):
+            return False
+        # 脚跟-脚趾水平分离度过小：视为未检测到足朝向
+        if abs(heel.x - toe.x) < 0.01:
+            return False
+        return True
 
     def _check_joint_visibility(self, landmarks, measure_type, side, threshold=0.3):
+        """
+        统一的关节可见性判断：
+          - visibility 必须达阈值
+          - 所有必需点都必须位于画面之内（否则判为画面不全，不显示）
+          - 足部另加严格校验（见 _check_foot_visibility）
+        """
         if measure_type in ("shoulder_flexion", "shoulder_abduction", "shoulder_extension"):
             s, e = (11, 13) if side == "left" else (12, 14)
             h = 23 if side == "left" else 24
-            return (landmarks[s].visibility >= threshold and
-                    landmarks[e].visibility >= threshold and
-                    landmarks[h].visibility >= threshold)
-        if measure_type == "elbow_flexion":
-            s, e, w = (11, 13, 15) if side == "left" else (12, 14, 16)
-            return (landmarks[s].visibility >= threshold and
-                    landmarks[e].visibility >= threshold and
-                    landmarks[w].visibility >= threshold)
-        if measure_type in ("hip_flexion", "hip_abduction"):
-            h, k = (23, 25) if side == "left" else (24, 26)
-            return (landmarks[h].visibility >= threshold and
-                    landmarks[k].visibility >= threshold)
-        if measure_type == "knee_flexion":
-            h, k, a = (23, 25, 27) if side == "left" else (24, 26, 28)
-            return (landmarks[h].visibility >= threshold and
-                    landmarks[k].visibility >= threshold and
-                    landmarks[a].visibility >= threshold)
-        if measure_type in ("ankle_dorsiflexion", "ankle_plantarflexion"):
+            req = [s, e, h]
+        elif measure_type == "elbow_flexion":
+            req = [11, 13, 15] if side == "left" else [12, 14, 16]
+        elif measure_type in ("hip_flexion", "hip_abduction"):
+            req = [23, 25] if side == "left" else [24, 26]
+        elif measure_type == "knee_flexion":
+            req = [23, 25, 27] if side == "left" else [24, 26, 28]
+        elif measure_type in ("ankle_dorsiflexion", "ankle_plantarflexion"):
             k, a = (25, 27) if side == "left" else (26, 28)
-            return (landmarks[k].visibility >= threshold and
-                    landmarks[a].visibility >= threshold and
-                    self._check_foot_visibility(landmarks, side))
+            req = [k, a]
+            if not all(landmarks[i].visibility >= threshold for i in req):
+                return False
+            if not self._is_in_frame(landmarks, req):
+                return False
+            return self._check_foot_visibility(landmarks, side)
+        else:
+            return True
+
+        if not all(landmarks[i].visibility >= threshold for i in req):
+            return False
+        if not self._is_in_frame(landmarks, req):
+            return False
         return True
 
     # ------------------------------------------------------------------
@@ -325,8 +368,13 @@ class PoseAnalyzerBase:
         if measure_type in ("knee_flexion", "elbow_flexion"):
             return round(max(0.0, 180.0 - angle), 2)
         if measure_type == "ankle_dorsiflexion":
+            # 解剖上几何角应在 60°~120° 之间，超出说明足部关键点被误估
+            if not (60.0 <= angle <= 120.0):
+                return None
             return round(max(0.0, 90.0 - angle), 2)
         if measure_type == "ankle_plantarflexion":
+            if not (60.0 <= angle <= 120.0):
+                return None
             return round(max(0.0, angle - 90.0), 2)
         return angle
 
@@ -629,34 +677,44 @@ class PoseAnalyzerBase:
 
     def _draw_skeleton(self, image, landmarks, w, h, near_side=None):
         """
-        绘制骨架连线
-        :param near_side: 'left' 或 'right'，侧视图时只绘制近侧
+        绘制骨架连线。
+        - 侧视图 (near_side 指定) 时只画近侧肢体，但头颈中线点始终绘制。
+        - 额外绘制"肩中点 → 鼻"作为颈部前屈可视化。
         """
         pts2d = [(int(lm.x * w), int(lm.y * h)) for lm in landmarks]
 
         if near_side:
             left_indices  = {11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31}
             right_indices = {12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32}
-            visible_indices = left_indices if near_side == 'left' else right_indices
+            side_set = left_indices if near_side == 'left' else right_indices
+            visible_indices = side_set | self._CENTER_INDICES
+            midline_pairs = {(11, 12), (23, 24), (11, 23), (12, 24)}
 
             for a, b in SKELETON_CONNECTIONS:
-                if a in visible_indices and b in visible_indices:
-                    cv2.line(image, pts2d[a], pts2d[b], (0, 200, 255), 2)
-                elif (a, b) in [(11, 12), (23, 24), (11, 23), (12, 24)]:
+                if (a in visible_indices and b in visible_indices) or \
+                   ((a, b) in midline_pairs):
                     cv2.line(image, pts2d[a], pts2d[b], (0, 200, 255), 2)
         else:
             for a, b in SKELETON_CONNECTIONS:
                 cv2.line(image, pts2d[a], pts2d[b], (0, 200, 255), 2)
 
+        # 颈部参考线：肩中点 → 鼻
+        ms_x = int((landmarks[11].x + landmarks[12].x) / 2 * w)
+        ms_y = int((landmarks[11].y + landmarks[12].y) / 2 * h)
+        nose = pts2d[0]
+        cv2.line(image, (ms_x, ms_y), nose, (0, 200, 255), 2)
+        cv2.circle(image, (ms_x, ms_y), 4, (0, 255, 0), -1)
+
     def _draw_keypoints(self, image, landmarks, w, h, show_index=False, near_side=None):
-        """绘制关键点"""
+        """绘制关键点；侧视图下头颈中线点也要画。"""
+        left_indices  = {11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31}
+        right_indices = {12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32}
+
         for idx, lm in enumerate(landmarks):
             if near_side:
-                left_indices  = {11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31}
-                right_indices = {12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32}
-                if near_side == 'left' and idx not in left_indices:
-                    continue
-                if near_side == 'right' and idx not in right_indices:
+                allowed = (left_indices if near_side == 'left' else right_indices) \
+                          | self._CENTER_INDICES
+                if idx not in allowed:
                     continue
 
             x, y = int(lm.x * w), int(lm.y * h)
