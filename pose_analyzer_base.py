@@ -15,6 +15,63 @@ from rom_rules import (
 class PoseAnalyzerBase:
     """姿态分析基类"""
 
+    # ── 类常量 ────────────────────────────────────────────────────────
+    _POINT_META = {
+        ("shoulder_flexion",     "left"):   (("左肩峰", 11), ("左肘", 13), ("垂直向下参考点(虚拟)", "↓")),
+        ("shoulder_flexion",     "right"):  (("右肩峰", 12), ("右肘", 14), ("垂直向下参考点(虚拟)", "↓")),
+        ("shoulder_abduction",   "left"):   (("左肩峰", 11), ("左肘", 13), ("垂直向下参考点(虚拟)", "↓")),
+        ("shoulder_abduction",   "right"):  (("右肩峰", 12), ("右肘", 14), ("垂直向下参考点(虚拟)", "↓")),
+        ("shoulder_extension",   "left"):   (("左肩峰", 11), ("左肘", 13), ("垂直向下参考点(虚拟)", "↓")),
+        ("shoulder_extension",   "right"):  (("右肩峰", 12), ("右肘", 14), ("垂直向下参考点(虚拟)", "↓")),
+        ("elbow_flexion",        "left"):   (("左肘", 13), ("左腕", 15), ("左肩", 11)),
+        ("elbow_flexion",        "right"):  (("右肘", 14), ("右腕", 16), ("右肩", 12)),
+        ("hip_flexion",          "left"):   (("左髋", 23), ("左膝", 25), ("垂直向下参考点(虚拟)", "↓")),
+        ("hip_flexion",          "right"):  (("右髋", 24), ("右膝", 26), ("垂直向下参考点(虚拟)", "↓")),
+        ("hip_abduction",        "left"):   (("左髋", 23), ("左膝", 25), ("垂直向下参考点(虚拟)", "↓")),
+        ("hip_abduction",        "right"):  (("右髋", 24), ("右膝", 26), ("垂直向下参考点(虚拟)", "↓")),
+        ("knee_flexion",         "left"):   (("左膝", 25), ("左踝", 27), ("左髋", 23)),
+        ("knee_flexion",         "right"):  (("右膝", 26), ("右踝", 28), ("右髋", 24)),
+        ("ankle_dorsiflexion",   "left"):   (("左踝", 27), ("左足中点(虚拟)", "29+31"), ("左膝", 25)),
+        ("ankle_dorsiflexion",   "right"):  (("右踝", 28), ("右足中点(虚拟)", "30+32"), ("右膝", 26)),
+        ("ankle_plantarflexion", "left"):   (("左踝", 27), ("左足中点(虚拟)", "29+31"), ("左膝", 25)),
+        ("ankle_plantarflexion", "right"):  (("右踝", 28), ("右足中点(虚拟)", "30+32"), ("右膝", 26)),
+        ("trunk_flexion",        None):     (("双髋中点(虚拟)", "23+24"), ("双肩中点(虚拟)", "11+12"), ("垂直向上参考点(虚拟)", "↑")),
+        ("neck_flexion",         "center"): (("双肩中点(虚拟)", "11+12"), ("鼻", 0), ("垂直向上参考点(虚拟)", "↑")),
+    }
+
+    # 头/颈中线点：无论侧视图左近还是右近都应绘制
+    _CENTER_INDICES = {0, 7, 8}
+
+    # 判断关键点是否在画面内时的归一化容差
+    _FRAME_MARGIN = 0.01
+
+    # ── 构造函数（唯一一个！）────────────────────────────────────────
+    def __init__(self):
+        self._lateral_calc_methods = {
+            "shoulder_flexion":     self._calculate_shoulder_flexion,
+            "shoulder_abduction":   self._calculate_shoulder_abduction,
+            "shoulder_extension":   self._calculate_shoulder_extension,
+            "elbow_flexion":        self._calculate_elbow_flexion,
+            "hip_flexion":          self._calculate_hip_flexion,
+            "hip_abduction":        self._calculate_hip_abduction,
+            "knee_flexion":         self._calculate_knee_flexion,
+            "ankle_dorsiflexion":   self._calculate_ankle_flexion,
+            "ankle_plantarflexion": self._calculate_ankle_flexion,
+        }
+        # 耸肩代偿的动态基线：记录历史见过的最大 ear-shoulder 垂直间距
+        # （代表受试者最放松、最不耸肩时的状态）
+        self._shoulder_elev_baseline = None
+
+    def reset_compensation_state(self):
+        """
+        在开始分析新一段视频/新一次测量前调用，
+        清除历史基线，避免上一段数据污染下一段。
+        """
+        self._shoulder_elev_baseline = None
+
+    # ------------------------------------------------------------------
+    # 字体加载
+    # ------------------------------------------------------------------
     @staticmethod
     def _load_chinese_font(font_size: int = 40):
         """加载中文字体，支持多平台"""
@@ -31,54 +88,9 @@ class PoseAnalyzerBase:
                 continue
         return ImageFont.load_default()
 
-
-    _POINT_META = {
-        ("shoulder_flexion", "left"): (("左肩峰", 11), ("左肘", 13), ("垂直向下参考点(虚拟)", "↓")),
-        ("shoulder_flexion", "right"): (("右肩峰", 12), ("右肘", 14), ("垂直向下参考点(虚拟)", "↓")),
-        ("shoulder_abduction", "left"): (("左肩峰", 11), ("左肘", 13), ("垂直向下参考点(虚拟)", "↓")),
-        ("shoulder_abduction", "right"): (("右肩峰", 12), ("右肘", 14), ("垂直向下参考点(虚拟)", "↓")),
-        ("shoulder_extension", "left"): (("左肩峰", 11), ("左肘", 13), ("垂直向下参考点(虚拟)", "↓")),
-        ("shoulder_extension", "right"): (("右肩峰", 12), ("右肘", 14), ("垂直向下参考点(虚拟)", "↓")),
-        ("elbow_flexion",        "left"):   (("左肘",          13), ("左腕",           15), ("左肩",            11)),
-        ("elbow_flexion",        "right"):  (("右肘",          14), ("右腕",           16), ("右肩",            12)),
-        ("hip_flexion", "left"): (("左髋", 23), ("左膝", 25), ("垂直向下参考点(虚拟)", "↓")),
-        ("hip_flexion", "right"): (("右髋", 24), ("右膝", 26), ("垂直向下参考点(虚拟)", "↓")),
-        ("hip_abduction", "left"): (("左髋", 23), ("左膝", 25), ("垂直向下参考点(虚拟)", "↓")),
-        ("hip_abduction", "right"): (("右髋", 24), ("右膝", 26), ("垂直向下参考点(虚拟)", "↓")),
-        ("knee_flexion",         "left"):   (("左膝",          25), ("左踝",           27), ("左髋",            23)),
-        ("knee_flexion",         "right"):  (("右膝",          26), ("右踝",           28), ("右髋",            24)),
-        ("ankle_dorsiflexion",   "left"):   (("左踝",          27), ("左足中点(虚拟)", "29+31"), ("左膝",        25)),
-        ("ankle_dorsiflexion",   "right"):  (("右踝",          28), ("右足中点(虚拟)", "30+32"), ("右膝",        26)),
-        ("ankle_plantarflexion", "left"):   (("左踝",          27), ("左足中点(虚拟)", "29+31"), ("左膝",        25)),
-        ("ankle_plantarflexion", "right"):  (("右踝",          28), ("右足中点(虚拟)", "30+32"), ("右膝",        26)),
-        ("trunk_flexion",        None):     (("双髋中点(虚拟)", "23+24"), ("双肩中点(虚拟)", "11+12"), ("垂直向上参考点(虚拟)", "↑")),
-        ("neck_flexion", "center"): (("双肩中点(虚拟)", "11+12"), ("鼻", 0), ("垂直向上参考点(虚拟)", "↑")),
-
-    }
-
-    # 头/颈中线点：无论侧视图左近还是右近都应绘制
-    _CENTER_INDICES = {0, 7, 8}
-
-    # 判断关键点是否在画面内时的归一化容差
-    _FRAME_MARGIN = 0.01
-
-    def __init__(self):
-        self._lateral_calc_methods = {
-            "shoulder_flexion":     self._calculate_shoulder_flexion,
-            "shoulder_abduction":   self._calculate_shoulder_abduction,
-            "shoulder_extension":   self._calculate_shoulder_extension,
-            "elbow_flexion":        self._calculate_elbow_flexion,
-            "hip_flexion":          self._calculate_hip_flexion,
-            "hip_abduction":        self._calculate_hip_abduction,
-            "knee_flexion":         self._calculate_knee_flexion,
-            "ankle_dorsiflexion":   self._calculate_ankle_flexion,
-            "ankle_plantarflexion": self._calculate_ankle_flexion,
-        }
-
     # ------------------------------------------------------------------
     # 视角检测
     # ------------------------------------------------------------------
-
     def detect_view_angle(self, landmarks) -> str:
         shoulder_diff = abs(landmarks[11].x - landmarks[12].x)
         hip_diff      = abs(landmarks[23].x - landmarks[24].x)
@@ -124,7 +136,6 @@ class PoseAnalyzerBase:
     # ------------------------------------------------------------------
     # 工具方法
     # ------------------------------------------------------------------
-
     @staticmethod
     def calculate_angle(point1, point2, point3):
         p1 = np.array(point1, dtype=float)
@@ -175,7 +186,6 @@ class PoseAnalyzerBase:
             return False
         if not self._is_in_frame(landmarks, [h_idx, t_idx]):
             return False
-        # 脚跟-脚趾水平分离度过小：视为未检测到足朝向
         if abs(heel.x - toe.x) < 0.01:
             return False
         return True
@@ -214,10 +224,26 @@ class PoseAnalyzerBase:
             return False
         return True
 
+    SAGITTAL_PLANARITY_MIN = 0.80
+
+    def _arm_sagittal_planarity(self, landmarks, side="left") -> float:
+        """
+        返回手臂 (肩→肘) 在 xy 平面上的投影长度占 3D 长度的比例。
+        - 接近 1.0：手臂在矢状面(画面)内 → 侧视图下可靠测前屈/后伸
+        - 接近 0.0：手臂指向/远离相机（如外展、水平外展）→ 不可靠
+        """
+        s_idx, e_idx = (11, 13) if side == "left" else (12, 14)
+        s = self._lm_xyz(landmarks[s_idx])
+        e = self._lm_xyz(landmarks[e_idx])
+        v = e - s
+        n3 = float(np.linalg.norm(v))
+        if n3 < 1e-6:
+            return 0.0
+        n2 = float(np.linalg.norm(v[:2]))
+        return n2 / n3
     # ------------------------------------------------------------------
     # 中间点 / 参考点计算
     # ------------------------------------------------------------------
-
     def _get_mid_shoulder(self, landmarks):
         return np.array([
             (landmarks[11].x + landmarks[12].x) / 2,
@@ -239,7 +265,6 @@ class PoseAnalyzerBase:
     # ------------------------------------------------------------------
     # 轴心-移动臂-固定臂 计算方法
     # ------------------------------------------------------------------
-
     def _calculate_shoulder_flexion(self, landmarks, side="left"):
         s, e = (11, 13) if side == "left" else (12, 14)
         shoulder_point = self._lm_xyz(landmarks[s])
@@ -334,7 +359,6 @@ class PoseAnalyzerBase:
     # ------------------------------------------------------------------
     # 角度计算与临床修正
     # ------------------------------------------------------------------
-
     @staticmethod
     def _get_joint_angle(axis, moving, fixed):
         """计算轴心-移动点-固定点之间的 3D 角度（兼容保留）"""
@@ -381,7 +405,6 @@ class PoseAnalyzerBase:
     # ------------------------------------------------------------------
     # 躯干补偿角（前倾正、后仰负，考虑朝向）
     # ------------------------------------------------------------------
-
     def _get_trunk_compensation(self, landmarks):
         ms = self._get_mid_shoulder(landmarks)
         mh = self._get_mid_hip(landmarks)
@@ -397,15 +420,23 @@ class PoseAnalyzerBase:
         return round(tilt if lateral >= 0 else -tilt, 2)
 
     # ------------------------------------------------------------------
-    # 代偿信号计算（修正：躯干侧屈用 midspine，不用肩连线）
+    # 代偿信号计算
     # ------------------------------------------------------------------
-
     def compute_compensation_signals(self, landmarks) -> dict:
-        """提取代偿分析所需的所有原始信号"""
+        """
+        提取代偿分析所需的所有原始信号。
+
+        关键修正：
+          1) 躯干侧屈用 midspine（肩中点→髋中点），不用肩连线，
+             因为肩胛上回旋会使肩连线倾斜，不代表躯干真正侧屈。
+          2) 耸肩代偿改用"相对躯干长度 + 动态基线"的方式，
+             避免侧视图下肩宽趋零导致的数值爆炸，
+             也避免任何直立姿势都被判为"严重耸肩"的恒假阳性。
+        """
         ms = self._get_mid_shoulder(landmarks)
         mh = self._get_mid_hip(landmarks)
 
-        # ── 躯干前/后倾（矢状面，带符号）──
+        # ── 躯干前/后倾（矢状面，带符号）────────────────────────────
         trunk_vec = np.array([ms[0] - mh[0], ms[1] - mh[1]])
         ref = np.array([0.0, -1.0])
         n = np.linalg.norm(trunk_vec)
@@ -421,17 +452,15 @@ class PoseAnalyzerBase:
         view = self.detect_view_angle(landmarks)
         coronal_reliable = (view == 'front')
 
-        # ── ★ 躯干冠状面侧屈：用 midspine（肩中→髋中），而不是肩连线 ──
-        # 肩连线会因肩胛上回旋而倾斜，不代表躯干真正侧屈
+        # ── 躯干冠状面侧屈：用 midspine，不用肩连线 ───────────────
         if coronal_reliable:
-            dx = ms[0] - mh[0]          # 水平分量（归一化坐标）
-            dy = mh[1] - ms[1]          # 竖直分量（图像 y 向下为正，髋在下）
+            dx = ms[0] - mh[0]
+            dy = mh[1] - ms[1]
             if dy > 1e-6:
                 trunk_lateral = float(np.degrees(np.arctan2(abs(dx), dy)))
             else:
                 trunk_lateral = 0.0
 
-            # 骨盆侧倾：仍可用髋连线（下肢不受肩胛影响）
             hx = landmarks[24].x - landmarks[23].x
             hy = landmarks[24].y - landmarks[23].y
             seg = float(np.hypot(hx, hy))
@@ -443,17 +472,40 @@ class PoseAnalyzerBase:
             trunk_lateral = 0.0
             pelvis_tilt = 0.0
 
-        # 耸肩比
-        shoulder_width = abs(landmarks[11].x - landmarks[12].x) + 1e-6
-        l_elev = (landmarks[7].y - landmarks[11].y) / shoulder_width
-        r_elev = (landmarks[8].y - landmarks[12].y) / shoulder_width
-        shoulder_elev_ratio = abs((l_elev + r_elev) / 2) * 100
+        # ── 耸肩代偿（相对躯干长度 + 动态基线）──────────────────────
+        # MediaPipe 归一化坐标下：y 向下为正，耳在肩上方 →
+        #   gap = shoulder.y - ear.y > 0，耸肩时 gap 变小。
+        torso_len = float(np.linalg.norm(np.array([ms[0] - mh[0], ms[1] - mh[1]])))
+
+        ear_shoulder_visible = (
+            getattr(landmarks[7],  'visibility', 1.0) >= 0.5 and
+            getattr(landmarks[8],  'visibility', 1.0) >= 0.5 and
+            getattr(landmarks[11], 'visibility', 1.0) >= 0.5 and
+            getattr(landmarks[12], 'visibility', 1.0) >= 0.5
+        )
+
+        if torso_len < 1e-3 or not ear_shoulder_visible:
+            shoulder_elev_deg = 0.0
+        else:
+            l_gap = (landmarks[11].y - landmarks[7].y) / torso_len
+            r_gap = (landmarks[12].y - landmarks[8].y) / torso_len
+            cur_gap = (l_gap + r_gap) / 2.0  # 越小代表越耸
+
+            if (self._shoulder_elev_baseline is None or
+                    cur_gap > self._shoulder_elev_baseline):
+                self._shoulder_elev_baseline = cur_gap
+
+            shrink = max(0.0, self._shoulder_elev_baseline - cur_gap)
+            shoulder_elev_deg = shrink * 60.0
+
+            if shoulder_elev_deg > 60.0:
+                shoulder_elev_deg = 60.0
 
         return {
             "trunk_tilt_signed":        round(trunk_signed, 2),
             "trunk_lateral_tilt":       round(abs(trunk_lateral), 2),
             "pelvis_lateral_tilt":      round(abs(pelvis_tilt), 2),
-            "shoulder_elevation_ratio": round(shoulder_elev_ratio, 2),
+            "shoulder_elevation_ratio": round(shoulder_elev_deg, 2),
             "coronal_reliable":         coronal_reliable,
         }
 
@@ -542,7 +594,6 @@ class PoseAnalyzerBase:
     # ------------------------------------------------------------------
     # ROM 报告生成（核心）—— 全部使用 2D 角度计算
     # ------------------------------------------------------------------
-
     def calculate_rom_report(self, landmarks, frame_width, frame_height, verbose=False):
         report = []
         trunk_tilt = round(self._get_trunk_compensation(landmarks), 2)
@@ -565,8 +616,7 @@ class PoseAnalyzerBase:
                     if shoulder_key in processed:
                         continue
                     processed.add(shoulder_key)
-                    if measure_type != "shoulder_flexion":
-                        continue
+
                 elif measure_type in processed:
                     continue
                 else:
@@ -584,6 +634,10 @@ class PoseAnalyzerBase:
 
                     actual_measure_type = measure_type
                     if measure_type in ("shoulder_flexion", "shoulder_extension"):
+                        # ★ 平面性检查：外展/水平外展时手臂不在矢状面内，要拒绝
+                        planarity = self._arm_sagittal_planarity(landmarks, calc_side)
+                        in_sagittal_plane = planarity >= self.SAGITTAL_PLANARITY_MIN
+
                         direction = self._determine_shoulder_direction(landmarks, calc_side)
                         if direction == 'flexion':
                             actual_measure_type = "shoulder_flexion"
@@ -602,15 +656,28 @@ class PoseAnalyzerBase:
                                     break
                             merged_name = "肩后伸"
                         merged_key = f"shoulder_sagittal_{calc_side}"
+                    else:
+                        in_sagittal_plane = True  # 非肩矢状面测量不做此过滤
 
                     angle = self._apply_clinical_correction(actual_measure_type, geo)
                     angle = self._apply_shoulder_sign(actual_measure_type, angle, landmarks, calc_side)
                     if not visible:
                         angle = None
+
+                    reliable_flag = bool(visible and in_sagittal_plane)
+
+                    if not in_sagittal_plane:
+                        warning = "手臂偏离矢状面（疑似外展/水平外展），前屈/后伸不可靠"
+                    elif not visible:
+                        warning = "关键点不可见或出画面"
+                    else:
+                        warning = ""
+
                     entry = self._build_entry(
                         defn, actual_measure_type, merged_key, merged_name,
                         calc_side, angle, visible,
-                        reliable=True, warning="", view=view, trunk_tilt=trunk_tilt,
+                        reliable=reliable_flag, warning=warning,
+                        view=view, trunk_tilt=trunk_tilt,
                     )
                     if verbose and axis is not None:
                         self._attach_verbose(entry, actual_measure_type,
@@ -634,10 +701,15 @@ class PoseAnalyzerBase:
                     angle = self._apply_shoulder_sign(measure_type, angle, landmarks, eff_side)
                     if not visible:
                         angle = None
+
+                    reliable_flag = bool(visible)
+                    warning = "" if visible else "关键点不可见或出画面"
+
                     entry = self._build_entry(
                         defn, measure_type, defn["key"], defn["name"],
                         side, angle, visible,
-                        reliable=True, warning="", view=view, trunk_tilt=trunk_tilt,
+                        reliable=reliable_flag, warning=warning,
+                        view=view, trunk_tilt=trunk_tilt,
                     )
                     if verbose and axis is not None:
                         self._attach_verbose(entry, measure_type, side, axis, moving, fixed)
@@ -674,7 +746,6 @@ class PoseAnalyzerBase:
     # ------------------------------------------------------------------
     # 骨架 / 关键点绘制
     # ------------------------------------------------------------------
-
     def _draw_skeleton(self, image, landmarks, w, h, near_side=None):
         """
         绘制骨架连线。
