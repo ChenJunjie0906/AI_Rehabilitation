@@ -448,7 +448,7 @@ if __name__ == "__main__":
         preset='fast',
     )
     result = analyzer.analyze_video(
-        video_path="素材库/视频/肩关节/前屈+后伸+外展.MP4",
+        video_path="素材库/前屈后伸外展素材.mp4",
         save_json=True,
         save_video=True,
         display=True,

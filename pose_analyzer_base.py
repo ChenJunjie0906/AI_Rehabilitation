@@ -40,7 +40,7 @@ class PoseAnalyzerBase:
     }
 
     # 头/颈中线点：无论侧视图左近还是右近都应绘制
-    _CENTER_INDICES = {0, 7, 8}
+    _CENTER_INDICES = {7, 8}
 
     # 判断关键点是否在画面内时的归一化容差
     _FRAME_MARGIN = 0.01
@@ -352,9 +352,19 @@ class PoseAnalyzerBase:
         return mh, ms, mh + np.array([0.0, -1.0, 0.0])
 
     def _calculate_neck_flexion(self, landmarks):
+        # 康复评定标准：轴心为肩峰（使用双肩中点）
         shoulder_mid = self._get_mid_shoulder(landmarks)
+
+        # 移动臂：肩中点 → 双耳中点（外耳道）
+        ear_mid = (self._lm_xyz(landmarks[7]) + self._lm_xyz(landmarks[8])) / 2.0
+
+        # 固定臂：通过肩峰的垂线（地面垂直方向）
         vertical_ref = shoulder_mid + np.array([0.0, -1.0, 0.0])
-        return shoulder_mid, self._lm_xyz(landmarks[0]), vertical_ref
+
+        return shoulder_mid, ear_mid, vertical_ref
+
+    # ------------------------------------------------------------------
+    # 角度计算与临床修正
 
     # ------------------------------------------------------------------
     # 角度计算与临床修正
@@ -750,41 +760,58 @@ class PoseAnalyzerBase:
         """
         绘制骨架连线。
         - 侧视图 (near_side 指定) 时只画近侧肢体，但头颈中线点始终绘制。
-        - 额外绘制"肩中点 → 鼻"作为颈部前屈可视化。
+        - 正视图/斜视图显示完整骨架。
         """
         pts2d = [(int(lm.x * w), int(lm.y * h)) for lm in landmarks]
 
         if near_side:
-            left_indices  = {11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31}
+            left_indices = {11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31}
             right_indices = {12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32}
             side_set = left_indices if near_side == 'left' else right_indices
-            visible_indices = side_set | self._CENTER_INDICES
             midline_pairs = {(11, 12), (23, 24), (11, 23), (12, 24)}
 
+            # 颈部参考线（康复评定标准）：肩中点 → 耳中点（移动臂），肩中点垂直向上（固定臂）
+            ear_mid_x = int((landmarks[7].x + landmarks[8].x) / 2 * w)
+            ear_mid_y = int((landmarks[7].y + landmarks[8].y) / 2 * h)
+            ms_x = int((landmarks[11].x + landmarks[12].x) / 2 * w)
+            ms_y = int((landmarks[11].y + landmarks[12].y) / 2 * h)
+
+            # 绘制轴心点：肩中点（肩峰）
+            cv2.circle(image, (ms_x, ms_y), 5, (0, 255, 255), -1)
+
+            # 绘制移动臂：肩中点 → 双耳中点（外耳道）
+            cv2.line(image, (ms_x, ms_y), (ear_mid_x, ear_mid_y), (255, 100, 0), 2)
+
+            # 绘制固定臂：肩中点垂直向上参考线
+            vertical_top = (ms_x, max(0, ms_y - int(h * 0.3)))
+            cv2.line(image, (ms_x, ms_y), vertical_top, (0, 200, 255), 2, cv2.LINE_AA)
+
+            # 绘制近侧骨架连线
             for a, b in SKELETON_CONNECTIONS:
-                if (a in visible_indices and b in visible_indices) or \
-                   ((a, b) in midline_pairs):
+                if a in side_set and b in side_set:
                     cv2.line(image, pts2d[a], pts2d[b], (0, 200, 255), 2)
+
+            # 绘制躯干中线
+            for a, b in midline_pairs:
+                cv2.line(image, pts2d[a], pts2d[b], (0, 200, 255), 2)
         else:
+            # 正视图/斜视图：绘制完整骨架
             for a, b in SKELETON_CONNECTIONS:
                 cv2.line(image, pts2d[a], pts2d[b], (0, 200, 255), 2)
 
-        # 颈部参考线：肩中点 → 鼻
-        ms_x = int((landmarks[11].x + landmarks[12].x) / 2 * w)
-        ms_y = int((landmarks[11].y + landmarks[12].y) / 2 * h)
-        nose = pts2d[0]
-        cv2.line(image, (ms_x, ms_y), nose, (0, 200, 255), 2)
-        cv2.circle(image, (ms_x, ms_y), 4, (0, 255, 0), -1)
-
     def _draw_keypoints(self, image, landmarks, w, h, show_index=False, near_side=None):
-        """绘制关键点；侧视图下头颈中线点也要画。"""
-        left_indices  = {11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31}
+        """绘制关键点；侧视图下只显示近侧肢体和近侧耳部点。"""
+        left_indices = {11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31}
         right_indices = {12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32}
 
         for idx, lm in enumerate(landmarks):
             if near_side:
-                allowed = (left_indices if near_side == 'left' else right_indices) \
-                          | self._CENTER_INDICES
+                # 智能选择：只显示近侧肢体 + 近侧耳部点
+                if near_side == 'left':
+                    allowed = left_indices | {7}  # 左侧 + 左耳
+                else:
+                    allowed = right_indices | {8}  # 右侧 + 右耳
+
                 if idx not in allowed:
                     continue
 
@@ -795,3 +822,4 @@ class PoseAnalyzerBase:
             if show_index:
                 cv2.putText(image, str(idx), (x + 5, y - 5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 0), 1)
+
