@@ -74,9 +74,7 @@ def get_video_analyzer(preset: str = "fast"):
 async def root():
     """健康检查"""
     return {
-        "status": "ok",
-        "service": "ROM Assessment API",
-        "video_analyzer_available": VIDEO_ANALYZER_AVAILABLE
+        "message": "您的康复评估助手即将上线，敬请期待！"
     }
 
 
