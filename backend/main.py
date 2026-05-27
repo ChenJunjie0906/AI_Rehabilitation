@@ -121,11 +121,12 @@ async def analyze_video_upload(
         )
 
         # 保存报告到用户目录
+        report_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         if user_id:
             user_report_dir = REPORTS_DIR / user_id
             user_report_dir.mkdir(exist_ok=True)
 
-            report_file = user_report_dir / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.json"
+            report_file = user_report_dir / f"{report_id}.json"
             with open(report_file, 'w', encoding='utf-8') as f:
                 json.dump(result, f, ensure_ascii=False, indent=2)
 
@@ -140,7 +141,8 @@ async def analyze_video_upload(
             "status": "success",
             "message": "视频分析完成",
             "result": result,
-            "result_video": result_video
+            "result_video": result_video,
+            "report_id": report_id
         })
 
     except HTTPException:
@@ -165,15 +167,23 @@ async def analyze_video_upload(
 
 @app.get("/api/download/{filename}")
 async def download_result_video(filename: str):
-    """下载分析结果视频"""
-    video_path = OUTPUT_DIR / filename
+    """下载分析结果文件（视频或PDF）"""
+    file_path = OUTPUT_DIR / filename
 
-    if not video_path.exists():
-        raise HTTPException(status_code=404, detail="视频文件不存在")
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    # 根据文件扩展名设置 MIME 类型
+    if filename.endswith('.pdf'):
+        media_type = 'application/pdf'
+    elif filename.endswith('.mp4'):
+        media_type = 'video/mp4'
+    else:
+        media_type = 'application/octet-stream'
 
     return FileResponse(
-        path=str(video_path),
-        media_type='video/mp4',
+        path=str(file_path),
+        media_type=media_type,
         filename=filename
     )
 
@@ -190,6 +200,52 @@ async def get_user_reports(user_id: str):
                 reports.append(json.load(fp))
 
     return {"reports": reports, "count": len(reports)}
+
+
+@app.post("/api/generate-report-pdf")
+async def generate_report_pdf(
+        report_id: str = Form(...),
+        user_id: str = Form(...),
+        api_key: Optional[str] = Form(None)
+):
+    """
+    根据已有的JSON报告生成PDF（包含AI总结）
+    """
+    try:
+        from pdf_report_generator import generate_pdf_with_ai_summary
+
+        # 查找报告文件
+        report_file = REPORTS_DIR / user_id / f"{report_id}.json"
+
+        if not report_file.exists():
+            raise HTTPException(status_code=404, detail="报告文件不存在")
+
+        # 读取报告
+        with open(report_file, 'r', encoding='utf-8') as f:
+            report_data = json.load(f)
+
+        # 生成PDF
+        pdf_filename = f"ROM_Report_{report_id}.pdf"
+        pdf_path = generate_pdf_with_ai_summary(
+            report_data,
+            api_key=api_key,
+            output_dir=str(OUTPUT_DIR),
+            output_filename=pdf_filename
+        )
+
+        return JSONResponse(content={
+            "status": "success",
+            "message": "PDF报告生成成功",
+            "pdf_url": f"/api/download/{pdf_filename}"
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[error] PDF生成失败: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"PDF生成失败: {str(e)}")
 
 
 # ============== 启动信息 ==============
