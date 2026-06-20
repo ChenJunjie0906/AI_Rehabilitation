@@ -442,6 +442,7 @@ class PoseAnalyzerBase:
           2) 耸肩代偿改用"相对躯干长度 + 动态基线"的方式，
              避免侧视图下肩宽趋零导致的数值爆炸，
              也避免任何直立姿势都被判为"严重耸肩"的恒假阳性。
+          3) 添加全身关节活动检测，用于发现目标关节外的代偿活动
         """
         ms = self._get_mid_shoulder(landmarks)
         mh = self._get_mid_hip(landmarks)
@@ -488,10 +489,10 @@ class PoseAnalyzerBase:
         torso_len = float(np.linalg.norm(np.array([ms[0] - mh[0], ms[1] - mh[1]])))
 
         ear_shoulder_visible = (
-            getattr(landmarks[7],  'visibility', 1.0) >= 0.5 and
-            getattr(landmarks[8],  'visibility', 1.0) >= 0.5 and
-            getattr(landmarks[11], 'visibility', 1.0) >= 0.5 and
-            getattr(landmarks[12], 'visibility', 1.0) >= 0.5
+                getattr(landmarks[7], 'visibility', 1.0) >= 0.5 and
+                getattr(landmarks[8], 'visibility', 1.0) >= 0.5 and
+                getattr(landmarks[11], 'visibility', 1.0) >= 0.5 and
+                getattr(landmarks[12], 'visibility', 1.0) >= 0.5
         )
 
         if torso_len < 1e-3 or not ear_shoulder_visible:
@@ -511,18 +512,93 @@ class PoseAnalyzerBase:
             if shoulder_elev_deg > 60.0:
                 shoulder_elev_deg = 60.0
 
+        # ── 检测其他关节活动作为潜在代偿 ───────────────────────────
+        # 计算各关节相对于初始位置的变化
+        elbow_angle_change = self._calculate_elbow_angle_change(landmarks)
+        hip_angle_change = self._calculate_hip_angle_change(landmarks)
+        knee_angle_change = self._calculate_knee_angle_change(landmarks)
+
         return {
-            "trunk_tilt_signed":        round(trunk_signed, 2),
-            "trunk_lateral_tilt":       round(abs(trunk_lateral), 2),
-            "pelvis_lateral_tilt":      round(abs(pelvis_tilt), 2),
+            "trunk_tilt_signed": round(trunk_signed, 2),
+            "trunk_lateral_tilt": round(abs(trunk_lateral), 2),
+            "pelvis_lateral_tilt": round(abs(pelvis_tilt), 2),
             "shoulder_elevation_ratio": round(shoulder_elev_deg, 2),
-            "coronal_reliable":         coronal_reliable,
+            "coronal_reliable": coronal_reliable,
+            # 添加其他关节活动作为潜在代偿信号
+            "elbow_activity": round(abs(elbow_angle_change), 2),
+            "hip_activity": round(abs(hip_angle_change), 2),
+            "knee_activity": round(abs(knee_angle_change), 2),
         }
 
-    def analyze_compensation(self, measure_type: str, signals: dict) -> list:
-        """根据主动作类型和当前信号，返回触发的代偿项"""
-        rules = COMPENSATION_RULES.get(measure_type, [])
+    def _calculate_elbow_angle_change(self, landmarks):
+        """计算肘关节角度变化，用于检测代偿"""
+        # 计算左侧肘关节角度
+        left_elbow_angle = self.calculate_angle(
+            self._lm_xyz(landmarks[11]),  # 左肩
+            self._lm_xyz(landmarks[13]),  # 左肘
+            self._lm_xyz(landmarks[15])  # 左腕
+        )
+
+        # 计算右侧肘关节角度
+        right_elbow_angle = self.calculate_angle(
+            self._lm_xyz(landmarks[12]),  # 右肩
+            self._lm_xyz(landmarks[14]),  # 右肘
+            self._lm_xyz(landmarks[16])  # 右腕
+        )
+
+        # 返回两侧肘关节角度的平均变化（假设初始为180度即完全伸直）
+        avg_elbow_angle = (left_elbow_angle + right_elbow_angle) / 2
+        return 180.0 - avg_elbow_angle  # 返回弯曲角度
+
+    def _calculate_hip_angle_change(self, landmarks):
+        """计算髋关节角度变化，用于检测代偿"""
+        # 计算左侧髋关节角度
+        left_hip_angle = self.calculate_angle(
+            self._lm_xyz(landmarks[11]),  # 左肩
+            self._lm_xyz(landmarks[23]),  # 左髋
+            self._lm_xyz(landmarks[25])  # 左膝
+        )
+
+        # 计算右侧髋关节角度
+        right_hip_angle = self.calculate_angle(
+            self._lm_xyz(landmarks[12]),  # 右肩
+            self._lm_xyz(landmarks[24]),  # 右髋
+            self._lm_xyz(landmarks[26])  # 右膝
+        )
+
+        # 返回两侧髋关节角度的平均变化（假设初始约为180度）
+        avg_hip_angle = (left_hip_angle + right_hip_angle) / 2
+        return 180.0 - avg_hip_angle  # 返回弯曲角度
+
+    def _calculate_knee_angle_change(self, landmarks):
+        """计算膝关节角度变化，用于检测代偿"""
+        # 计算左侧膝关节角度
+        left_knee_angle = self.calculate_angle(
+            self._lm_xyz(landmarks[23]),  # 左髋
+            self._lm_xyz(landmarks[25]),  # 左膝
+            self._lm_xyz(landmarks[27])  # 左踝
+        )
+
+        # 计算右侧膝关节角度
+        right_knee_angle = self.calculate_angle(
+            self._lm_xyz(landmarks[24]),  # 右髋
+            self._lm_xyz(landmarks[26]),  # 右膝
+            self._lm_xyz(landmarks[28])  # 右踝
+        )
+
+        # 返回两侧膝关节角度的平均变化（假设初始约为180度）
+        avg_knee_angle = (left_knee_angle + right_knee_angle) / 2
+        return 180.0 - avg_knee_angle  # 返回弯曲角度
+
+    def analyze_compensation(self, measure_type: str, signals: dict, target_joints: list = None) -> list:
+        """
+        根据主动作类型和当前信号，返回触发的代偿项
+        新增参数 target_joints: 指定的目标关节列表，用于检测非目标关节的活动
+        """
         triggered = []
+
+        # 检查预定义的代偿规则
+        rules = COMPENSATION_RULES.get(measure_type, [])
         for rule in rules:
             val = signals.get(rule["signal"])
             if val is None:
@@ -538,12 +614,40 @@ class PoseAnalyzerBase:
             else:
                 continue
             triggered.append({
-                "code":       rule["code"],
-                "name":       rule["name"],
-                "level":      level,
-                "value":      round(v, 2),
+                "code": rule["code"],
+                "name": rule["name"],
+                "level": level,
+                "value": round(v, 2),
                 "suggestion": rule["suggestion"],
             })
+
+        # 新增逻辑：检查目标关节外的其他关节活动作为代偿
+        if target_joints:
+            non_target_activities = []
+
+            # 检查非目标关节的活动
+            if "shoulder" not in measure_type.lower() and signals.get("elbow_activity", 0) > 10.0:
+                non_target_activities.append(("肘关节", signals["elbow_activity"]))
+            if "hip" not in measure_type.lower() and signals.get("hip_activity", 0) > 10.0:
+                non_target_activities.append(("髋关节", signals["hip_activity"]))
+            if "knee" not in measure_type.lower() and signals.get("knee_activity", 0) > 10.0:
+                non_target_activities.append(("膝关节", signals["knee_activity"]))
+
+            # 添加躯干活动检测
+            trunk_activity = max(abs(signals.get("trunk_tilt_signed", 0)),
+                                 signals.get("trunk_lateral_tilt", 0))
+            if "trunk" not in measure_type.lower() and trunk_activity > 8.0:
+                non_target_activities.append(("躯干", trunk_activity))
+
+            for joint_name, activity_level in non_target_activities:
+                triggered.append({
+                    "code": f"{joint_name}_compensation",
+                    "name": f"{joint_name}代偿活动",
+                    "level": "mild" if activity_level < 20.0 else "severe",
+                    "value": round(activity_level, 2),
+                    "suggestion": f"{joint_name}出现{activity_level}°活动，可能存在代偿行为"
+                })
+
         return triggered
 
     def _compute_joint_vectors(self, landmarks, measure_type, side):

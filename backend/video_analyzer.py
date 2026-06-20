@@ -366,6 +366,10 @@ class VideoPoseAnalyzer(PoseAnalyzerBase):
             mt = _resolve_measure_type(key)
             if mt is None:
                 continue
+
+            # 确定目标关节
+            target_joints = [mt.split('_')[0]]  # 例如 "shoulder_flexion" -> ["shoulder"]
+
             comp_list_agg = {}
             for peak_idx, _ in peaks:
                 if peak_idx >= len(all_frames_data):
@@ -373,7 +377,8 @@ class VideoPoseAnalyzer(PoseAnalyzerBase):
                 signals = all_frames_data[peak_idx].get("compensation_signals", {})
                 if not signals:
                     continue
-                for c in self.analyze_compensation(mt, signals):
+                # 传递目标关节约束到代偿分析
+                for c in self.analyze_compensation(mt, signals, target_joints):
                     k = c["code"]
                     if k not in comp_list_agg or c["value"] > comp_list_agg[k]["value"]:
                         comp_list_agg[k] = c
@@ -452,7 +457,7 @@ if __name__ == "__main__":
         preset='fast',
     )
     result = analyzer.analyze_video(
-        video_path="素材库/视频/肩关节/前屈.mp4",
+        video_path="素材库/视频/肩关节/shoulder_extension_compensatory_video_2.mp4",
         save_json=True,
         save_video=True,
         display=True,

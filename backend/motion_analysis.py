@@ -12,7 +12,8 @@ from scipy.signal import savgol_filter, find_peaks
 # 一个通道内正负号代表两个互为反向的动作（前屈+/后伸-）
 # key 前缀 -> (正向名, 负向名)
 BIDIRECTIONAL_CHANNELS = {
-    "shoulder_sagittal": ("肩前屈", "肩后伸")
+    "shoulder_sagittal": ("肩前屈", "肩后伸"),
+    "shoulder_extension": ("肩前屈", "肩后伸")
     # 以后有其他带符号通道可以加，例如：
     # "trunk_sagittal":  ("躯干前屈", "躯干后伸"),
 }
@@ -128,15 +129,31 @@ def _analyze_signed_channel(action_key: str, angles: np.ndarray) -> dict:
     has_pos = a_max >  DIRECTION_THRESHOLD_DEG
     has_neg = a_min < -DIRECTION_THRESHOLD_DEG
 
+    # 修改逻辑：如果同时有正负值，选择幅度最大的方向作为主要方向
     if has_pos and has_neg:
-        action_name = f"{pos_name}/{neg_name}"
-        direction_type = "bidirectional"
+        # 选择绝对值最大的方向
+        if abs(a_max) >= abs(a_min):
+            # 正值幅度更大或相等，选择正向（前屈）
+            action_name = pos_name
+            direction_type = "flexion_only"
+        else:
+            # 负值绝对值更大，选择负向（后伸）
+            action_name = neg_name
+            direction_type = "extension_only"
     elif has_neg and not has_pos:
         action_name = neg_name
         direction_type = "extension_only"
-    else:
+    elif has_pos and not has_neg:
         action_name = pos_name
         direction_type = "flexion_only"
+    else:
+        # 如果没有超过阈值的值，则根据绝对值大小判断主导方向
+        if abs(a_min) > abs(a_max):
+            action_name = neg_name  # 负值绝对值更大，显示负向名称
+            direction_type = "extension_only"
+        else:
+            action_name = pos_name  # 正值绝对值更大或相等，显示正向名称
+            direction_type = "flexion_only"
 
     return {
         "action_name":    action_name,
@@ -146,19 +163,18 @@ def _analyze_signed_channel(action_key: str, angles: np.ndarray) -> dict:
         "range":          rng,
     }
 
-
 def _effective_range(action_key: str, angles: np.ndarray) -> float:
     """
     用于主动作排序的"有效幅度"。
     - 单向通道：就是 peak-to-peak
-    - 双向通道：取两个方向中较大的那个，避免"前屈+后伸"被当成单一大幅度动作
-      而盖过真正存在的其他独立动作（如外展）。
+    - 双向通道：改为选择两个方向中绝对值最大的那个
     """
     if _match_bidirectional(action_key) is None:
         return float(np.ptp(angles))
 
     a_max = float(np.max(angles))
     a_min = float(np.min(angles))
+    # 修改：不再使用双向运动的特殊逻辑，而是取最大绝对值
     return max(abs(a_max), abs(a_min))
 
 
@@ -235,7 +251,7 @@ def recognize_primary_action(rom_statistics: dict,
     else:
         action_name = signed["action_name"]
 
-    # 5) 置信度：基于 eff_range 的主 vs 次比
+        # 5) 置信度：基于 eff_range 的主 vs 次比
     sorted_eff = sorted((v["eff_range"] for v in channel_info.values()),
                         reverse=True)
     if len(sorted_eff) < 2:

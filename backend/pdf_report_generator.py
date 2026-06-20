@@ -551,7 +551,7 @@ if __name__ == "__main__":
     # PyCharm 运行时使用默认参数
     if len(sys.argv) < 2:
         # 默认测试路径（修改为你的实际 JSON 报告路径）
-        report_path = r"output/前屈/前屈_rom_analysis.json"
+        report_path = r"output/shoulder_extension_compensatory_video_2/shoulder_extension_compensatory_video_2_rom_analysis.json"
         api_key = None  # 或者填写你的 API 密钥
 
         if not os.path.exists(report_path):

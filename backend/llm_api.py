@@ -69,39 +69,41 @@ def call_llm_for_summary(report_data: dict, api_key: str = None) -> str:
     # 构建提示词
     prompt = f"""你是一位专业的康复治疗师，请根据以下关节活动度(ROM)视频分析报告给出专业总结和建议：
 
-【评估动作】
-{action_name} ({direction_explain})
-置信度: {primary_action.get('confidence', 0)}
+    【评估动作】
+    {action_name} ({direction_explain})
+    置信度: {primary_action.get('confidence', 0)}
 
-【重要说明】
-- 这是视频分析，记录了完整的动作过程
-- 重复次数表示完成的动作周期数
-- visible=false 表示该关节在当前视角下不可测量，不是活动度为0
+    【重要说明】
+    - 这是视频分析，记录了完整的动作过程
+    - 重复次数表示完成的动作周期数
+    - visible=false 表示该关节在当前视角下不可测量，不是活动度为0
+    - 若在执行主运动时，其他非目标关节出现明显活动（如评估肩关节时，髋关节、膝关节等出现>10°活动），则视为代偿现象
 
-【关节活动度数据】
-{chr(10).join(rom_details) if rom_details else '无数据'}
+    【关节活动度数据】
+    {chr(10).join(rom_details) if rom_details else '无数据'}
 
-【代偿问题】
-{chr(10).join(comp_issues) if comp_issues else '未检测到明显代偿'}
+    【代偿问题】
+    {chr(10).join(comp_issues) if comp_issues else '未检测到明显代偿'}
 
-【视频信息】
-处理速度: {video_info.get('processing_fps', 0)} FPS
-分析帧数: {video_info.get('analyzed_frames', 0)} / {video_info.get('total_frames', 0)}
+    【视频信息】
+    处理速度: {video_info.get('processing_fps', 0)} FPS
+    分析帧数: {video_info.get('analyzed_frames', 0)} / {video_info.get('total_frames', 0)}
 
-请以专业但易懂的语言提供：
-1. 整体评估结论（关注活动范围是否充分，注意负值表示反向运动）
-2. 主要问题分析（注意区分"未测量"和"测量值为 0"）
-3. 康复训练建议
-4. 注意事项
+    请以专业但易懂的语言提供：
+    1. 整体评估结论（关注活动范围是否充分，注意负值表示反向运动）
+    2. 主要问题分析（注意区分"未测量"和"测量值为 0"，特别关注是否存在代偿现象）
+    3. 康复训练建议
+    4. 注意事项
 
-【输出格式要求】
-- 使用纯文本，不要使用 Markdown 格式
-- 不要使用 ** 或 __ 等加粗符号
-- 使用数字编号 1. 2. 3. 4. 列出要点
-- 简洁明了，重点突出，控制在 300 字以内
-- 正确理解双向运动的含义（负值不等于异常起始位）
-- 不要将"未检测到数据"误判为"活动度为 0"
-"""
+    【输出格式要求】
+    - 使用纯文本，不要使用 Markdown 格式
+    - 不要使用 ** 或 __ 等加粗符号
+    - 使用数字编号 1. 2. 3. 4. 列出要点
+    - 简洁明了，重点突出，控制在 300 字以内
+    - 正确理解双向运动的含义（负值不等于异常起始位）
+    - 不要将"未检测到数据"误判为"活动度为 0"
+    - 注意识别代偿现象：非目标关节在主运动期间出现明显活动（>10°）
+    """
 
     # 调用火山引擎API
     url = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"

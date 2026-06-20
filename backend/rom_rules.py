@@ -531,6 +531,26 @@ COMPENSATION_RULES = {
             "suggestion": "肩胛上提，提示盂肱活动受限",
         },
     ],
+    "shoulder_extension": [  # 添加肩后伸的代偿规则
+        {
+            "code": "trunk_forward_lean",
+            "name": "躯干前倾代偿",
+            "threshold_mild":   8.0,   # 度
+            "threshold_severe": 15.0,
+            "signal": "trunk_tilt_signed",   # 正值=前倾
+            "direction": "positive",
+            "suggestion": "躯干前倾>8°，可能通过脊柱屈曲代偿肩伸受限",
+        },
+        {
+            "code": "shoulder_elevation",
+            "name": "耸肩代偿",
+            "threshold_mild": 15.0,
+            "threshold_severe": 25.0,
+            "signal": "shoulder_elevation_ratio",
+            "direction": "positive",
+            "suggestion": "肩胛上提，提示盂肱活动受限",
+        },
+    ],
     "shoulder_abduction": [
         {
             "code": "trunk_lateral_opposite",
